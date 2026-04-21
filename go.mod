@@ -3,7 +3,7 @@ module github.com/mja00/bjs-tracker
 go 1.25.2
 
 require (
-	github.com/Noooste/azuretls-client v1.12.12
+	github.com/Noooste/azuretls-client v1.13.2
 	gopkg.in/yaml.v3 v3.0.1
 )
 
