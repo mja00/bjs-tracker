@@ -2,6 +2,8 @@
 
 A lightweight Go utility that polls BJ's Wholesale Club inventory and sends Discord webhook notifications when product stock status changes.
 
+## It appears Akamai's bot protection has nuked this from orbit and it no longer works on most Linux hosts. Archiving since I really no longer need it. 
+
 ## Features
 
 - Polls one or more products at a configurable interval
