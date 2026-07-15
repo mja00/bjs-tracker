@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 
 	azuretls "github.com/Noooste/azuretls-client"
 )
@@ -12,12 +14,22 @@ const (
 	priceURL     = "https://api.bjs.com/digital/live/api/v1.0/product/price"
 )
 
+const (
+	maxRetries    = 3
+	baseBackoff   = 2 * time.Second
+	statusTooMany = 429
+)
+
+// Header set and order mirror a real Chrome request captured from www.bjs.com;
+// Akamai bot detection fingerprints on both, so keep them in sync with the browser.
 var commonHeaders = azuretls.OrderedHeaders{
 	{"accept", "application/json, text/plain, */*"},
+	{"accept-encoding", "gzip, deflate, br, zstd"},
 	{"accept-language", "en-US,en;q=0.9"},
 	{"cache-control", "no-cache"},
 	{"origin", "https://www.bjs.com"},
 	{"pragma", "no-cache"},
+	{"priority", "u=1, i"},
 	{"referer", "https://www.bjs.com/"},
 	{"sec-ch-ua", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`},
 	{"sec-ch-ua-mobile", "?0"},
@@ -49,7 +61,9 @@ func (c *BJSClient) CheckInventory(storeID int, articleID, clubID string) (strin
 	headers := commonHeaders.Clone()
 	headers.Add("content-type", "application/json")
 
-	resp, err := c.session.Post(inventoryURL, reqBody, headers)
+	resp, err := doWithRetry(func() (*azuretls.Response, error) {
+		return c.session.Post(inventoryURL, reqBody, headers)
+	})
 	if err != nil {
 		return "", 0, fmt.Errorf("inventory request: %w", err)
 	}
@@ -83,7 +97,9 @@ func (c *BJSClient) CheckInventory(storeID int, articleID, clubID string) (strin
 func (c *BJSClient) GetPrice(storeID int, productID, clubID string) (float64, error) {
 	url := fmt.Sprintf("%s/%d?productId=%s&pageName=PDP&clubId=%s", priceURL, storeID, productID, clubID)
 
-	resp, err := c.session.Get(url, commonHeaders)
+	resp, err := doWithRetry(func() (*azuretls.Response, error) {
+		return c.session.Get(url, commonHeaders)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("price request: %w", err)
 	}
@@ -109,6 +125,31 @@ func (c *BJSClient) GetPrice(storeID int, productID, clubID string) (float64, er
 	}
 
 	return result.BJSClubProduct[0].InClubOfferPrice.Amount, nil
+}
+
+// doWithRetry runs a request, retrying on HTTP 429 with backoff so a rate-limited
+// BJ's endpoint recovers on its own instead of surfacing as a hard failure.
+func doWithRetry(do func() (*azuretls.Response, error)) (*azuretls.Response, error) {
+	var resp *azuretls.Response
+	var err error
+	for attempt := 0; ; attempt++ {
+		resp, err = do()
+		if err != nil || resp.StatusCode != statusTooMany || attempt >= maxRetries {
+			return resp, err
+		}
+		time.Sleep(retryAfter(resp, attempt))
+	}
+}
+
+// retryAfter honors the server's Retry-After header when present, else falls back
+// to exponential backoff (2s, 4s, 8s).
+func retryAfter(resp *azuretls.Response, attempt int) time.Duration {
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return baseBackoff << attempt
 }
 
 func truncate(b []byte, n int) string {
